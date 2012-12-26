@@ -1,0 +1,12 @@
+JDK
+
+java version "1.6.0_23"
+Java(TM) SE Runtime Environment (build 1.6.0_23-b05)
+Java HotSpot(TM) Client VM (build 19.0-b09, mixed mode, sharing)
+
+Host
+
+Microsoft Windows XP
+Professional
+Version 2002
+Service Pack 3

@@ -1,0 +1,174 @@
+
+USERGUIDE
+
+Table of contents
+
+1. Starting the application
+2. Configuration
+2.1 Configuration in server and standalone mode
+2.2 Configuration in client mode
+3. Server mode
+4. Client and standalone mode
+4.1 GUI overview
+4.2 Retrieving all records
+4.3 Searching for records
+4.4 Booking records
+
+---
+
+
+1. Starting the application
+
+As required in the assignment, the application can be started by invoking the runme.jar
+with either no or exactly one command-line argument that specifies the application mode:
+
+- java -jar runme.jar
+  starts the application in client mode
+- java -jar runme.jar alone
+  starts the application in standalone mode
+- java -jar runme.jar server
+  starts the application in server mode
+
+
+2. Configuration
+
+Right after the application started and before the requested components (server, client) are created,
+the configuration parameters are initialized.
+
+The configuration is loaded from the suncertify.properties file in the current working directory.
+If the file does not exist or is not accessible, the properties are initialized with empty strings.
+
+The user is then prompted to review and edit the configuration parameters, that are applicable to the
+selected application mode:
+
+- Standalone mode:
+  Path and name of the data file
+- Client mode:
+  Name and port of the server to connect to
+- Server mode:
+  Path and name of the data file
+
+At this point, the user may choose to terminate the application by pressing the "Exit" button.
+
+When the user confirms the configuration, the parameters are validated.
+
+If validation fails, an error message is displayed and the dialog to edit the parameters is still displayed.
+If validation succeeds, the properties are persisted in the suncertify.properties file in the current working directory.
+Again, it is not a fatal error, if it is not possible to access the properties file.
+
+It is not possible to change the configuration, after the components have been started.
+If configuration parameters need to be changed, the application must be terminated and restarted.
+
+
+2.1 Configuration in server and standalone mode
+
+In server and standalone mode, there is only a single configuration parameter:
+- Database location
+  the absolute path and name of the data file to be used.
+
+The user can directly enter the parameter value in the textfield.
+As an alternative, by pressing the "..." button, a file chooser dialog opens, that allows the user
+to select a data file.
+
+By pressing the "Exit" button, the application is terminated and no components are started.
+After pressing the "Start" button, the specified parameters are validated.
+
+Validation checks, if a file with the specified name actually exists.
+
+If validation fails, a message is displayed and the dialog to edit the parameters is still displayed.
+If validation succeeds, the configuration parameters are persisted and the appropriate components are started.
+
+
+2.2 Configuration in client mode
+
+In client mode, there are two configuration parameters:
+- Server address
+  the server's address, i.e. the host part of the URL used to access the RMI registry
+  For a server running on the same machine, the value would be "localhost"
+- Server port
+  the server's port, i.e. the port part of the URL used to access the RMI registry
+  This application uses the standard server port "1099", but different values may be possible,
+  if connecting to another implementation.
+  
+The user can directly enter the parameter values in the textfields.
+
+By pressing the "Exit" button, the application is terminated and no components are started.
+After pressing the "Connect to server" button, the specified parameters are validated.
+
+Validation checks, if the server address parameters can be used to build a well-formed URL and
+if the server port parameter is actually a valid integer.
+
+If validation fails, a message is displayed and the dialog to edit the parameters is still displayed.
+If validation succeeds, the configuration parameters are persisted and the appropriate components are started.
+
+
+3. Server mode
+
+When the server was successfully started, a single frame with a menu bar is displayed.
+
+The only operation available is to stop the server.
+To do this, select the "Stop server" menu item from the "File" menu.
+
+
+4. Client- and Standalone mode
+
+From the user's point of view, there is no difference in the way to invoke the application's use cases in client and standalone mode.
+
+In both cases, the same GUI is presented to the user, only the actual operations are invoked either locally (standalone mode) or remotely (client mode).
+The user does not experience a difference between these modes, with the only exception that if a network error occurs in client mode,
+a special error message is displayed, that can not happen in standalone mode.
+
+
+4.1 GUI overview
+
+The client GUI (in client and standalone mode) consists of the following parts:
+
+- a menu bar with a single menu item ("File" > "Quit")
+- a JTable component in the center of the frame
+  used to display the result of the latest operation (either all records or a search result)
+- a panel at the bottom of the frame with the following components:
+  - a labelled textfield to enter the name parameter for search operations
+  - a labelled textfield to enter the location parameter for search operations
+  - a button to search for records that match the specified criteria
+  - a button to retrieve all records
+
+To stop the application, users can either close the window or select the "Quit" menu item from the "File" menu.
+In both cases the shutdown hook runs and releases the resources used by the application.
+
+
+4.2 Retrieving all records
+
+To retrieve all records, the user must click on the "show all" button (in the lower right corner of the panel).
+
+The result of the operation is presented in the central JTable component.
+If the result does not fit into the current window's size, a scroll bar is rendered around the table.
+
+
+4.3 Searching for records
+
+To search for records, the user first needs to specify the search criteria.
+
+The name search parameter needs to be entered in the upper textfield (labelled "Name").
+The location search parameter needs to be entered in the lower textfield (labelled "Location").
+If a field is left blank, the corresponding attribute is not used to filter the result.
+
+By clicking on the "search" button in the upper right corner of the panel, the search operation is invoked.
+The search operation returns all valid records, where the specified search attributes exactly match the corresponding fields
+(including capitalization).
+
+The result of the search operation is presented in the central JTable component.
+If the result does not fit into the current window's size, a scroll bar is rendered around the table.
+
+
+4.4 Booking records
+
+The record to be booked must have been discovered by the latest search operation and must be displayed in the JTable component.
+
+To book the record, the user must double-click on the corresponding entry in the table.
+
+The system then asks for confirmation of the booking.
+If the dialog is confirmed, the booking operation is attempted.
+
+If the booking operation fails, an error message is displayed.
+If the booking operation succeeeds, a confirmation message is displayed and the content of the JTable component is updated to reflect the
+change of the owner attribute.

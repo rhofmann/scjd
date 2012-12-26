@@ -1,0 +1,767 @@
+
+Table of contents
+
+1. General
+1.1 Architecture
+1.2 Package Structure
+1.3 Locking concept (Application-level locking)
+1.4 Application startup
+1.5 Shutdown hook
+1.6 Exception handling
+
+2. Server-side data management system
+2.1 Assumptions about unspecified aspects of the DBAccess interface
+2.2 Data file format (generic vs fixed)
+2.3 Domain model
+2.4 Locking implementation (Implementation-level locking)
+2.5 Implementation of the Data class
+2.5.1 File access
+2.5.2 Lock management
+2.6 Creation of DBAccess instances
+
+3. Client-side GUI
+3.1 Model-View-Controller pattern
+3.2 Model implementation
+3.3 View implementation
+3.4 Controller implementation
+3.5 Business Service implementation
+3.6 Interactions
+
+4. Network
+4.1 RMI implementation
+4.2 RemoteDBAccess interface
+4.3 RemoteData implementation
+4.4 RemoteData adapter
+4.5 RemoteDBAccessFactory
+4.6 Bootstrapping the network connection
+4.7 Interactions
+
+---
+
+1. General
+
+* For the sake of brevity, in this document and in the JavaDoc, I often use the wording "DBAccess instance",
+although DBAccess is an interface and cannot be instantiated. What is actually meant, is of course "an instance
+of some class, that implements the DBAccess interface"
+
+* As required, the DBAccess interface has not been changed and is used exactly as provided with the assignment.
+However, it has been reformatted and its JavaDoc information has been completed to make it easier to use.
+
+* In the delivered version of the implementation, all logging and testing code has been removed to make the code
+clearer and more concise.
+
+
+1.1 Architecture
+
+The application consists -as specified- of 3 subsystems:
+
+- the server-side data management system
+  implemented mainly by the Data class (and some utility classes, providing low-level file access and locking functionality).
+  All classes concerning data management are in the suncerfity.db package or one of its subpackages
+  
+- the client-side GUI
+  implemented using the Model-View-Controller pattern
+  All classes concerning the GUI are in the suncertify.client package
+  
+- the network connection between the two
+  The classes in suncertify.remote provide the framework that allows DBAccess instances to be called remotely via RMI
+  The network server functionality (setting up an RMI server, binding the required components) is implemented in the suncertify.server package
+
+Each subsystem is described in detail in its own subchapter.
+
+The Application class provides the main entrypoint of the application.
+Depending on the application mode (which is determined from the command line arguments), it starts the required components.
+
+The program must be able to work in one of two modes: networked and non-networked.
+To support this two modes, this implementation provides two classes that both implement the DBAccess interface:
+- the Data class for the non-networked mode, where the data file is accessed directly and no networking and serialization is necessary.
+- the RemoteDataAdapter class for the networked mode, encapsulating the details of communicating with a server.
+
+Depending on the application mode, an instance of one these two classes is created and used by the client.
+This creation of DBAccess instances is encapsulated in the DBAccessFactory class.
+
+The DBAccess instance is instrumented to execute the application's use cases.
+As only the DBAccess interface's methods are used, the use case's implementation does not need to care or know whether
+it operates directly on a data file or via a network.
+
+Also, this approach guarantees, that in non-networked no network server code is used at all.
+As required, the database and GUI run in the same VM and no networking is performed.
+
+
+1.2 Package Structure
+
+The application consists of the following packages:
+
+- suncertify.db
+  Contains the DBAccess interface, its Data implementation and all exception classes.
+- suncertify.db.domain
+  Contains the classes of the application's domain model
+- suncertify.db.lock
+  Contains classes implementing the locking functionality of data records.
+- suncertify.client
+  Contains the classes of the client components, including the client's GUI
+- suncertify.server
+  Contains the classes of the server components
+- suncertify.remote
+  Contains the classes used to provide the networked mode
+- suncertify.application
+  Contains classes providing infrastructure and service implementations used throughout the application:
+  The Application class provides the main entrypoint of the application.
+  Also contained in the package is the implementation of a shutdown hook, that is used to clean up after the application terminates.
+  The DBAccessFactory class encapsulates the creation of DBAccess instances.
+  The BusinessService class provides implementations for each use case of the application.
+
+
+1.3 Locking concept
+
+The DBAccess interface defines a kind of locking, where only modifying operations (updateRecord, deleteRecord) require that the
+record is locked for exclusive use by the caller.
+
+Methods reading records (readRecord, findByCriteria) do not require that the record is locked.
+
+The implementation must take into account, that records are not locked for exclusive use when reading them.
+This means, that the view a client has about the state of the data records can be out-of-date as other clients concurrently may make modifications.
+We need to be prepared, that the state of the data records has changed, even betwenn calls to the DBAccess interface within one method,
+and an exception as e.g. a RecordNotFoundException may be thrown.
+
+This is e.g. the case in the implementation of the search operation, where the findByCriteria method is used to retrieve the indices of matching records,
+directly followed by calls to the readRecord method to read the data of the records.
+Even so the indices come from the findByCriteria methods, it may happen that some records cannot be read because they have been deleted by other clients.
+
+
+1.4 Application startup
+
+The suncertify.application.Application class provides the main method of the application.
+It is published as Main-Class in the Manifest of runme.jar.
+
+First, the shutdown hook is registered with the runtime system.
+
+We then try to determine the application mode from the given command line arguments.
+If this is not possible, a short description about how to call the application is output, and the application is terminated.
+
+The application properties are loaded from the suncertify.properties file in the current working directory.
+It is not a fatal error, if the properties cannot be loaded e.g. because the file does not exist.
+In this case, the properties are preset with empty values.
+
+Depending on the application mode, different components are started:
+- Server mode
+  The server components (ServerController and ServerView) are started.
+  These in turn, start an RMI registry and register a RemoteDBAccessFactory instance.
+  Clients can use this factory to create connections to this server.
+  
+- Client mode
+  The client components (ClientController and ClientView) are started.
+  An instance of the BusinessService that provides implementations of the application's use cases is created.
+  This instance is initialized with a DBAccess instance, that communicates remotely with a server at the specified server address.
+  
+- Standalone mode
+  The client components (ClientController and ClientView) are started.
+  An instance of the BusinessService that provides implementations of the application's use cases is created.
+  This instance is initialized with a DBAccess instance, that operates directly on a local data file.
+  The Data implementation is also used in Standalone mode, although with only one client, no synchronization of the accesses would be necessary.
+  Still, the synchronization doesn't prevent the implementation to work with a single client, and therefore the class orginally
+  designed for the Server mode is reused in the Standalone mode.
+  
+
+1.5 Shutdown hook
+
+The CleanExitShutdownHook class implements a shutdown hook for the application.
+A shutdown hook can be registered with the VM and is executed when the VM is shut down.
+I.e. it is a good place for clean up code, that must be executed when the user terminates the application.
+
+Depending on the mode, the application is running in, CleanExitShutdownHook releases the resources used by the application.
+- In Server mode, the components that are exposed via RMI are unbound in the RMI registry.
+- In Server or Standalone mode, the data file that is kept open while the application runs, is closed. 
+
+The server does not keep track of connected clients, so there is no way, clients can be notified, when the server is shut down.
+
+
+1.6  Exception handling
+
+All exceptions declared in the DBAccess interface describe application-level problems, as e.g. a record cannot be found or a specified cookie value is invalid.
+The DBAccess interface does not provide a way to signal the occurence of a technical problem that prevents the successful execution of a method.
+Such a technical error could be e.g. that the data file is inaccessible or that a network error occured.
+
+To handle this kind of error situations, a new exception class is introduced:
+Whenever a technical error occurs that cannot be handled by the implementation, a TechnicalErrorException (or a subclass of it) is thrown.
+
+TechnicalErrorException is a RuntimeException and therefore it needs not be declared in the interface or specifically handled by callers of the DBAccess interface.
+Methods that work with DBAccess instances don't need to make adjustments because of this implementation detail in the DBAccess instance.
+They can ignore TechnicalErrorExceptions and let them be handled by another caller in the hierarchy.
+Or they may choose to catch the exception and handle it (although it is not declared in the DBAccess interface).
+For example, the client GUI catches TechnicalErrorExceptions and displays an error message to the user.
+
+The following exception classes have been declared in the application:
+
+RuntimeExceptions:
+- TechnicalErrorException
+  Some technical error (that may be specified in the description) has occured
+- CorruptDatabaseException (subclass of TechnicalErrorException)
+  The format of the database is invalid
+- NetworkErrorException (subclass of TechnicalErrorException)
+  Wraps an IOException that occured while using networking, e.g. a RemoteException
+  
+Checked Exceptions:
+- RecordNotFoundException
+  is thrown if a record is accessed that doesn't exist in the data file or has been marked as deleted
+- SecurityException
+  is thrown if an access is attempted on a record that is locked with a cookie other than the specified cookie value.
+- RecordAlreadyBookedException
+  is thrown if booking a record is attempted and the record has already been booked
+- DuplicateKeyException
+  is declared for the createRecord method in the DBAccess interface.
+  In this implementation, this exception is not actually thrown.
+  As specified´the createMethod uses an empty slot to store the newly created record.
+  The key (i.e. the record number) is not a parameter for the method.
+  Therefore a situation in which the slot chosen by the createOperation conflicts with a key already present in the data file, cannot occur.
+
+  
+2. Server-side data management system
+
+
+2.1 Assumptions about unspecified aspects of the DBAccess interface behavior
+
+The following assumptions have been used in this implementation:
+
+- The numbering of records is 0-based
+- The number of the record corresponds to the "position" of the record in the file.
+- The ordering of the fields in a String array parameter or return value is always as specified in the database schema:
+  1. name, 2. location, 3. specialties, 4. size, 5. rate, 6. owner
+- Field length in the data file is fixed. No shorter and no longer values are possible.
+  If an entry of a record to be saved is too short, it is filled up with spaces at the end.
+  If an entry of a record to be saved is too long, the value is truncated to the fixed length.
+- When a record is deleted, the "slot" in the file is marked as deleted and becomes available for reuse.
+  Records following the deleted record do not change position and keep their record number.
+- updateRecord, createRecord: An IllegalArgumentException will be thrown, if
+  - the specified record array is null or
+  - the specified record array is not null, but the array length is unequal to the number of fields in a record
+- createRecord cannot throw DuplicateKeyException
+  In the DBAccess interface createRecord declares that it may throw a DuplicateKeyException.
+  However, the createMethod uses an empty slot to store the newly created record and the key (i.e. the record number) is not a parameter for the method.
+  Therefore a situation in which the slot chosen by the createOperation conflicts with a key already present in the data file, cannot occur.
+- findByCriteria: the comparison of criteria and field values is case-sensitive, i.e. "foo" does not match of "FOO"
+
+2.2 Data file format (generic vs fixed)
+
+The layout of the file is defined generically in the schema description section of the data file.
+Yet in the context of this application, the schema to be used is fixed.
+
+The information from the schema description section is read from the data file when starting up the server
+and used to validate the integrity of the data file.
+If the schema cannot be validated, the server terminates with an error message.
+
+Although the file schema is fixed and constant values could be used throughout the implementation,
+the generic file schema information is stored after it has been validated.
+
+In the implementation of accessing the file, both forms of file schema information are used:
+In some situations it is more efficient to use the knowledge of the fixed schema,
+e.g. using constant values for offsets into a record instead of calculating it from the generic file schema information.
+In other situations the code can be made more concise by using the generic file meta data, e.g. when iterating over the fields of a records.
+
+
+2.3 Domain model
+
+The domain model is very simple. It consists basically of two aspects:
+
+- File meta data
+  The schema description in the data file is stored in an instance of FileMetaData.
+  This stores global information, as e.g. the magic cookie value, offset and fieldCount and it has a list of
+  SchemaDescription instances, where each SchemaDescription stores field name and length of one field in the schema.
+  
+- Data records
+  A DataRecord instance represents a data record as it appears in a data file.
+  This class is basically a wrapper for the String array representation of a data record as used by the DBAccess interface.
+  It allows to easily convert from one representation of a data record to the other and provides more meaningful access methods
+  (e.g. recordObject.getLocation() instead of recordArray[2], or recordObject.isBooked() instead of recordArray[5] != null).
+
+
+2.4 Locking implementation
+
+For all methods of the Data class, it is essential, that at least part of them are executed atomically,
+so that concurrent accesses of other clients cannot change the static state of the implementation.
+
+In this implementation, this is achieved by having blocks synchronized on the Data class object.
+This could also have been achieved, by making Data a singleton and each method synchronized.
+But this would have meant to needlessly constrict the way Data can be used (as a singleton).
+Also in some cases, not the complete method needs to synchronized, only part of it.
+In this way, the synchronized blocks can be kept to the minimum possible.
+
+
+2.5 Data implementation
+
+A critical design choice that affects how synchronisation has to be implemented, is whether Data is a singleton or not.
+In this implementation, Data is not a singleton. Clients are free to either use their own Data instance or share an instance between them.
+
+There can be many instances of the Data class, however, certain state needs to be shared between the instances:
+- the static RandomAccessFile instance used by all Data instances to make low-level data file accesses and
+- the static data structure shared by all Data instances used to keep track of the lock information
+
+To keep the Data class cohesive, this two aspects of the implementation have been encapsulated in their own classes:
+Each Data instance has
+- a FileAccess instance which provides low-level access to the data file used.
+- a LockManager instance which manages the information about which records are locked with which cookie value
+
+The FileAccess instance does not know, whether records are locked or not, it simply reads and writes them.
+The LockManager instance does not know, whether records exist in the file or whether they are deleted or not, it simply stores lock information of the records.
+The Data implementation delegates to the FileAccess and LockManager instances and instruments them to implement the DBAccess methods.
+
+- readRecord
+  The specified record number is validated to check, that the record exists and is not deleted.
+  If the validation fails, a RecordNotFoundException is thrown.
+  
+  Reading the record is delegated to the FileAccess instance's readRecord method.
+  
+  Validation and access of the record must be handled atomically.
+  Otherwise another client might change/delete the record, after it was successfully validated
+  and before it is read, resulting in a dirty read.
+
+- updateRecord
+  The specified record number is validated to check, that the record exists and is not deleted.
+  If the validation fails, a RecordNotFoundException is thrown.
+  Then the specified cookie value is validated by the LockManager instance, whether it is really the cookie that was used to lock the record.
+  If the validation fails, a SecurityException is thrown.
+  
+  Writing the record is delegated to the FileAccess instance's writeRecord method.
+  
+  Validation and record access must be handled atomically.
+  Otherwise another client might change/delete the record, after it was successfully validated
+  and before it is written, resulting in a lost write.
+  
+- deleteRecord
+  The specified record number is validated to check, that the record exists and is not deleted.
+  If the validation fails, a RecordNotFoundException is thrown.
+  Then the specified cookie value is validated by the LockManager instance, whether it is really the cookie that was used to lock the record.
+  If the validation fails, a SecurityException is thrown.
+  
+  To delete the record, it is first read by using the FileAccess instance's readRecord method.
+  The state of the record, is then set to DELETED and the record is written back
+  by delegating to the FileAccess instance's writeRecord method.
+
+  Validation and record access must be handled atomically.
+  Otherwise another client might change/delete the record, after it was successfully validated
+  and before it is written, resulting in a lost write.  
+  
+- findByCriteria
+  The findByCriteria method first read an array of all records.
+  It iterates over the records, and checks for each record, if it is not deleted and if it matches the specified criteria.
+  As specified, a criterion is only used for comparison, if it is not null.
+  
+  If a criterion is not null, it is checked if the corresponding data record field starts with the criterion's value.
+  
+  If all specified criteria match a record, the record's index is stored in a list.
+  In the end, the list of all found indices is converted to an array and returned as the method's result.
+  
+  The complex findByCriteria method must be handled atomically.
+  Otherwise other clients might change/delete records, after they have been read and before they were stored in the return value.
+  
+- createRecord
+  To find an empty slot to use for the new record, the createReocrd method first reads all records from the data file.
+  It the iterates over the records, searching for an entry that is marked as deleted.
+  
+  If no empty slot was found, the new record is appended to the end of the file, by using the first slot at the file's end.
+  The record is then written to the file, by delegating to the FileAccess instance's writeRecord method.
+
+  The createRecord method needs to be handled atomically.
+  Otherwise clients that are concurrently searching for an empty slot to create a new record, may see the same state of the data file
+  and choose the same slot for writing.
+  
+- lock
+  The lock method first acquires the lock on the record with the specified record number.
+  This needs to be done outside of the synchronized block because acquiring a lock is a blocking call.
+  
+  Only after the lock was acquired, it is checked, if the record exists and is not deleted, as this can only be done
+  from within a synchronized block.
+  The LockManager instance does not know and care about whether the record is valid.
+  If the record is not valid, it is unlocked again, by delegating to the LockManager instance and a RecordNotFoundException is thrown.
+
+- unlock
+  The record is unlocked, by delegating to the LockManager instance's unlock method.
+  
+- validateRecord
+  This method is not part of the DBAccess interface.
+  As validating if a record exists and is not deleted, is a part of many of the other methods,
+  the operation has been encapsulated in its own method.
+  
+  It checks first, if the specified record number points to a position within the data file.
+  If not, a RecordNotFoundException is thrown.
+  
+  Next, it is checked if the record is deleted, by reading the record and inspecting its state attribute.
+  If the record is deleted, a RecordNotFoundException is thrown.
+  
+  The method does not provide synchronization of its own and must be called from within a synchronized block.
+
+
+2.5.1 FileAccess
+
+Internally, FileAccess uses a static RandomAccessFile instance to access the data file.
+
+It is appropriate to use a RandomAccessFile, since the numeric values stored in the header information
+use the format of the DataInputStream and DataOutputStream classes as does the RandomAccessFile.
+
+Access to the static RandomAccessFile instance needs to be synchronized, as the RandomAccessFile
+implementation is not thread-safe.
+We need to ensure that no concurrent operations change the file pointer during a read or write operation.
+
+FileAccess provides an openFile method to initialize the RandomAccessFile instance and a closeFile method to release it.
+Calling any of the other methods before the instance was initialized, results in an IllegalStateException.
+
+Reading a record is implemented by moving the file pointer to the correct position (seek) and
+reading the amount of bytes specified in the schema description and then converting the read byte arrays
+to string according to the Charset used for character conversion.
+
+Likewise, writing a record is implemented by moving the file pointer to the correct position,
+converting the record's data field if necessary to byte arrays and writing the correct amount of bytes
+to the RandomAccessFile.
+
+Furthermore, FileAccess provides some convenience methods to check, whether a record exists, whether it is deleted,
+to retrieve the number of records in the file and to retrieve a list of all records in the file.
+
+No caching of the file content is provided, other than that already provided by the RandomAccessFile instance.
+
+
+2.5.2 LockManager
+
+The LockManager instance keeps the lock information in a static HashMap, that maps each record number (Long)
+to a DataRecordLock instance.
+
+Access to this lock map needs to be synchronized, to ensure that for each record number at most one DataRecordLock instance exists.
+The DataRecordLock instances are created lazily, when they are requested for the first time.
+
+Acquiring and releasing a lock is delegated to the corresponding methods in the DataRecordLock instance.
+
+Internally, each DataRecordLock instance uses a ReentrantLock instance, to synchronize access to its instance variables
+and to provide a condition variable on which threads are synchronized.
+It stores the current lock cookie value as well as the information, whether the DataRecordLock is locked at all.
+
+The DataRecordLock implementaton may not make the assumption, that one thread corresponds to a specific client (e.g. by storing a thread,
+that is the "owner" of the lock), because the server implemention uses RMI and different calls by the same client may be serviced
+with different threads and calls by different clients may be serviced with the same thread.
+
+Therefore, the information that the DataRecordLock is already locked, is only stored as a boolean.
+
+Acquiring the lock is implemented by checking this flag.
+While the flag is set, the current thread waits on the condition variable until it is signalled that the lock is available.
+The condition needs to be checked in loop, because waiting threads might have been reactivated by a "spurious wakeup".
+If the check was successful, the locked flag is set to true and a new lock cookie value is generated and returned.
+
+This means, that an attempt to lock a resource that is already locked causes the current thread to give up the CPU,
+consuming no CPU cycles until the desired resource becomes available. 
+
+Releasing the lock first checks, if the specified lock cookie value is actually the one, with which the record was locked.
+If not, a SecurityException is thrown.
+If is is, the locked flag is set to false and the lock cookie value is reset.
+Then one thread waiting on the DataRecordLock's condition variable is notified about the lock's release, by calling the condition
+variable's signal method.
+
+
+2.6 Creation of DBAccess instances
+
+The DBAccessFactory can create instances of classes the implement the DBAccess interface.
+
+It provides two static creation methods, one to create a "local" DBAccess instance, that directly operates on the specified data file,
+and another one to create a "remote" DBAccess instance, that communicates with the server at the specified address.
+
+In either case, the DBAccessFactory returns an object, implementing the DBAccess interface.
+The client GUI uses this instance to process the application's use cases.
+As it only uses the methods provided by the DBAccess interface, it needs not be aware, whether it directly operates on a data file,
+or whether it remotely communicates with a server.
+
+Thus, the DBAccessFactory provides a switch for the different modes (client or standalone).
+Its result is instrumented by BusinessService instance, which is not aware whether the DBAccess instance works locally or remotely.
+Whether data access is done on a local data file, or whether communcation with a server is involved, is completely encapsulated within the DBAccess instance.
+
+
+3. Client-side GUI
+
+
+3.1 Model-View-Controller pattern
+
+The client GUI is implemented using the Model-View-Controller pattern.
+
+The model contains the data that resulted from the latest operation and that is to be displayed to the user.
+The view provides the graphical components used to display the model and that can accept user input.
+The controller is the component responsible to carry out the use cases triggered by the view and to update the model.
+
+The View has a Model and has a Controller.
+When operations are invoked in the View, it calls the Controller to execute them.
+The Controller returns a Model that reflects the result of the operation.
+The View stores this new Model and displays the information it contains.
+
+In this implementation, each component is implemented by exactly one class.
+The model is implemented by the ClientModel class, the view by the ClientView class and the controller by the ClientController class.
+
+The server side GUI is implemented following the same pattern.
+The only operation provided by the server GUI is to stop the server.
+
+
+3.2 Model implementation
+
+In each use case of the application, the resulting data that is to be displayed is a collection of records,
+displayed in a JTable component.
+
+The model implementation ClientModel simply wraps a collection of data records and provides the contained data in a form,
+suitable to be displayed in a table.
+It implements the TableModel interface and can therefore be used as the model of the view's JTable component.
+
+It also provides methods to access the wrapped data records.
+
+
+3.3 View implementation
+
+The ClientView is a JFrame. It creates and manages the GUI components:
+- a menu bar with a single menu item ("File" > "Quit")
+- a JTable component in the center of the frame
+  used to display the result of the latest operation (either all records or a search result)
+- a panel at the bottom of the frame with the following components:
+  - a labelled textfield to enter the name parameter for search operations
+  - a labelled textfield to enter the location parameter for search operations
+  - a button to search for records that match the specified criteria
+  - a button to retrieve all records
+
+A ClientView instance has a ClientController instance to which it delegates the execution of the use cases.
+The result is returned as a ClientModel instance, which is set as the model of the JTable component.
+
+ClientView implements the ActionListener interface. It registered itself with each input component.
+When the actionPerformed method is called, the use case to be executed is determined by checking the actionCommand attribute.
+With the JTable component a MouseListener is registered to react to double clicks on the table.
+
+For each use case ("search records", "retrieve all records", "book a record") a method exists.
+The methods extract parameter values from the GUI components, if necessary (e.g. the search parameters from the text field
+for the search operation or the selected record for the booking operation).
+In the booking operation, a dialog is displayed asking for confirmation.
+
+Executing the use case is then delegated to the ClientController instance, which in each case returns a ClientModel as result.
+This ClientModel is set as model of the JTable component and repaint of the table is initiated, so that the result is displayed to the user.
+
+The calls to the ClientController may result in a TechnicalErrorException being thrown.
+Therefore, each call is surrounded by a try-catch-block, catching the TechnicalErrorException.
+If a TechnicalErrorException is caught, an error message is displayed to the user.
+
+Also, any application-level exception declared in the DBAccess interface, are caught in the ClientView and displayed to the user.
+
+
+3.4 Controller implementation
+
+The client controller provides a method for each use case of the application:
+- Retrieving all records
+- Searching records
+- Booking records
+
+Internally, it delegates the execution to a BusinessService instance.
+The BusinessService instance returns a list of data records, which the ClientController wraps in a ClientModel and returns to the ClientView.
+
+Any exception thrown by the BusinessService methods (RecordNotFoundException, RecordAlreadyBookedException) are also declared
+in the corresponding ClientController method and are passed on to the ClientView to handle.
+
+
+3.5 Service implementation
+
+The BusinessService class provides implementations for each use case of the application.
+
+The reason to have a BusinessService class is to have one cohesive class that implements the use cases instrumenting a DBAccess instance
+and whose methods use parameters and return values in terms of the domain model (collections of DataRecords).
+
+The ClientController class, despite having almost the same interface as the BusinessService class, is only an adapter, which translates
+between the model-view-controller world of the GUI frontend and the more general signature of the BusinessService methods.
+
+The BusinessService implements the use cases by instrumenting a DBAccess instance.
+Because it only uses the methods from the DBAccess interface, it works the same whether the DBAccess instance operates directly on a data file
+or whether it communicates with a server over the network.
+
+- Retrieving all records
+  Fetching all records is the same as "searching" for records without any filtering criteria.
+  Executing this method is a special case of the search operation and is implemented by calling the search method with empty search criteria.
+  
+- Searching records
+  From the specified name and location search parameters an array of search criteria is created, suitable to passed to the DBAccess findByCriteria method.
+  findByCriteria returns an array of indices.
+
+  For each index, the corresponding record is read with the DBAccess readMethod method.
+  It may happen, that a RecordNotFoundException is thrown, because another client has deleted the record between the call to findByCriteria and readRecord.
+  This exception is therefore caught and ignored.
+  
+  If the record can be read, it is checked whether the criteria exactly match the record's fields.
+  This is necessary, because the findByCriteria method returns all records, where the criteria are prefixes of the corresponding record's fields.
+  Since we are only interested in exact matches, we have to recheck if the read records fit the criteria exactly (case-sensitive).
+  
+  All records that can be read and are found to be exact matches, are collected in a list and returned as the method's result.
+  
+- Booking records
+  The entire implementation is surrounded by a try-catch-block, because if any exception occurs, it is important to make sure,
+  that the locked record is unlocked in the finally block.
+  
+  First, the record needs to be locked for exclusive use by using the DBAccess lockRecord method.
+  This call may be blocking, but after it returns, we own the lock and store its cookie value.
+
+  A flag is set to true, which is used in the finally block to determine whether the lockRecord operation actually succeeded (flag==true)
+  or whether it has thrown an exception and no unlock operation is necessary (flag==false).
+  
+  Next, although the client already has the data record to be booked in its view, it has to be reread, as another client might have made changes
+  between the time it was fetched by the client and the time when the booking operation was started.
+  While we hold the lock though, no other client can concurrently modify this record.
+  
+  If the record was already booked (it has a non-null owner attribute), we update the data record collection to reflect this and throw an exception.
+  
+  If it is not yet booked, we set the owner field.
+  Since the application does not interact with the owner value other then checking if it is set at all,
+  we simply set a constant "owner ID", signifying that the record is booked by some client.
+  
+  Eventually, the changed record is written back to the data source.
+  
+  In the finally block, the record is unlocked.
+  
+  
+3.6 Interactions
+
+This chapter presents a wrap-up of the client classes' interactions.
+
+The ClientView being an ActionListener receives an ActionEvent from its input components.
+It reads necessary data from the input components (search parameters, etc.) and calls the appropriate method on its ClientController instance.
+
+The ClientController in turn calls the corresponding method on its BusinessService instance.
+The BusinessService executes the use case by instrumenting a DBAccess instance and returns the result as a list of data records.
+
+The ClientController wraps the resulting data records list in a ClientModel and returns it as the result to the ClientView.
+
+The ClientView sets the resulting ClientModel as the model of its JTable component and forces a repaint of its components.
+
+If any exception occurs in the ClientController or BusinessService, it is passed on to the ClientView, which catches the exception
+and displays an error message to the user.
+
+
+This framework allows to easily integrate future functionality enhancements:
+The ClientCommand enum is an enumeration of all the commands understood by the view and controller.
+To add new functionality, ClientCommand should be updated to include a constant for the new type of operation.
+Components to display new information and to accept user input, would have to be added to the ClientView class.
+Using ClientCommand constants for the actionCommand value of the input components and adding a corresponding case
+in the actionPerformed method of the ClientView, decouples the source and the implementation of ActionEvents.
+The code to provide new functionality, should be added in the ClientController and BusinessService class.
+
+
+4 Network connection
+
+
+4.1 RMI implementation
+
+The application's network connection is implemented using RMI.
+
+There are several reasons for the choice of RMI and against a simple socket connection:
+- Remote objects look and feel just like local objects.
+  The complexities of network-aware objects are hidden from the application.
+- There is no need to design a protocol between the client and server.
+- Method calls are type-safe
+
+As required, RMI over JRMP is used and the stubs are generated automatically.
+I.e. there is no need to explicitly invoke rmic to generate the stubs.
+
+
+4.2 RemoteDBAccess interface
+
+To make the the data management functionality available for remote access, a "remote interface" needs to be registered with the RMI registry
+that makes the methods provided by the DBAccess interface remotely available and callable.
+
+The DBAccess interface itself cannot be used directly, because it is not a remote interface:
+If does not inherit from the java.rmi.Remote interface and none of its methods
+declares that they throw RemoteExceptions and can therefore not be registered with the RMI registry.
+
+Therefore, a new remote interface RemoteDBAccess is introduced, that inherits from java.rmi.Remote and that contains a corresponding
+method for each method of the DBAccess interface with the same signature, except that also a RemoteException may be thrown.
+
+I.e. the two interfaces contain methods following this pattern:
+DBAccess:		public String[] readRecord(long recNo) throws RecordNotFoundException;
+RemoteDBAccess: public String[] readRecord(long recNo) throws RecordNotFoundException, RemoteException;
+
+Also, all parameters and return values of the RemoteDBAccess are either primitive values, Strings or arrays of Strings
+and are serializable. All exception classes used in the declaration of RemoteDBAccess are serializable as well.
+
+This interface needs to be implemented by classes providing access to the database by communicating over a network.
+Classes implementing the interface can be registered with the RMI registry and are available and callable remotely.
+
+
+4.3 RemoteData implementation
+
+The RemoteData class implements the RemoteDBAccess interface and extends the UnicastRemoteObject class.
+It can therefore be exported as a remote object using RMI.
+
+RemoteData is simply a wrapper for a DBAccess instance, which it is initialized with in its constructor.
+
+As RemoteData is designed to be used via RMI, it must also be serializable.
+Yet, none of its state makes sense outside of the server.
+In particular, the DBAccess instance variable must be marked transient to prevent it from being serialized and passed to the client.
+
+All of RemoteData's methods simply delegate to the corresponding method of its wrapped DBAccess instance.
+
+
+4.4 RemoteData adapter
+
+On the client side, the BusinessService uses a DBAccess instance to provide implementations of the application's use cases.
+
+To initialize it for network use, the DBAccessFactory is used to create a DBAccess instance that remotely accesses the server.
+The RemoteDBAccess interface exposed via RMI needs to be adapted to DBAccess, so that it can be used by the client.
+
+This is done by using a RemoteDataAdapter instance.
+RemoteDataAdapter is simply a wrapper of a RemoteDBAccess instance.
+It implements the DBAccess interface and delegates each method to the corresponding method of its RemoteDBAccess instance.
+
+Since DBAccess does not declare that RemoteExceptions may be thrown, these exception need to be caught and rethrown, wrapped in a TechnicalErrorException.
+
+
+4.5 RemoteDBAccessFactory
+
+A server can service many clients, each of which receives its own connection in the form of a RemoteDBAccess instance.
+
+Since the number of connecting clients is not known, when the server is started and should not be limited,
+it is not possible to simply register a fixed number of RemoteDBAccess instances.
+
+Instead, a single factory instance is registered, that clients can use to create their own connection.
+
+This factory implements the RemoteDBAccessFactory interface, a remote interface that can be registered with the RMI registry.
+Its implementation, the RemoteDBAccessFactoryImpl class, inherits from UnicastRemoteObject.
+
+It can create a RemoteDBAccess instance, that wraps a DBAccess instance which operates locally on a data file on the server.
+
+Clients first obtain a stub of the RemoteDBAccessFactory and use it to obtain their own RemoteDBAccess instance.
+
+
+4.6 Bootstrapping the network connection
+
+The bootstrapping of the network client is implemented in the Application class's startServer and startClient method.
+
+When the server components (ServerController and ServerView) are started, an RMI registry is started and and a remote object
+implementing the RemoteDBAccessFactory interface is exported.
+
+When the client components are started, the client's BusinessService is initialized with a remote implementation of the DBAccess interface.
+The BusinessService is simply passed a DBAccess instance and is not aware, that it internally communicates with a server.
+
+This DBAccess instance is created with the dedicated method of the DBAccessFactory, which accepts the server's address and port as parameters.
+
+First, a stub of the RemoteDBAccessFactory is fetched from the RMI registry.
+With this stub, a new RemoteDBAccess instance is created on the server, a reference of which is returned to the client.
+
+The RemoteDBAccess stub on the client is wrapped in a RemoteDataAdapter, which implements the DBAccess interface.
+The RemoteDataAdapter is returned by the DBAccessFactory and is used to initialize the BusinessService.
+
+
+4.7 Interactions
+
+This chapter presents a wrap-up of the networking classes interactions.
+
+When the BusinessService executes a use case, it uses its inner DBAccess instance.
+In the networking case, this DBAccess instance is an instance of the RemoteDataAdapter class.
+
+All methods called on the RemoteDataAdapter are simply delegated to its inner RemoteDBAccess instance.
+
+The RemoteDBAccess instance is a stub that was returned by invoking the RemoteDBAccessFactory's create method.
+All calls to the RemoteDBAccess instance are marshalled and sent to the server, where they get unmarshalled and delegated to a RemoteData instance.
+
+The RemoteData instance delegates the call to its inner DBAccess instance.
+This, at last, is a Data instance which directly accesses a data file on the server.
+
+If there is a return value from the method, it is also returned by the RemoteData instance.
+The return value gets marshalled and sent back to the client, where it is unmarshalled and received by the RemoteDataAdapter.
+The return value is then received by the BusinessService.
+
+If an exception should occur in this chain, which is declared in the DBAccess interface, it is simply passed on, until it is handled.
+All classes in the calling hierarchy that pass on the exception, need to make sure, that any used resources (e.g. locks) are released in a finally block.
+
+If a RemoteException should occur because of a networking problem, the exception is caught in the RemoteDataAdapter and rethrown, wrapped in a TechnicalErrorException.
